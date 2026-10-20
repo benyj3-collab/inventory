@@ -527,20 +527,94 @@ function initApp(){
 // ===== CAMERA =====
 let torchOn = false;
 let currentTrack = null;
+let nativeScanInterval = null;
+let videoStream = null;
+const NATIVE_FORMATS = ['ean_13','ean_8','code_128','code_39','upc_a','upc_e','itf','code_93'];
+const hasNativeDetector = ('BarcodeDetector' in window);
 
-function startCamera(){
+async function startCamera(){
   if(cameraActive) return;
   const readerEl = document.getElementById("reader");
   readerEl.innerHTML = "";
 
-  scanner = new Html5Qrcode("reader");
+  if(hasNativeDetector){
+    // === NATIVE BarcodeDetector — much faster & more reliable ===
+    try {
+      const supported = await BarcodeDetector.getSupportedFormats();
+      const formats = NATIVE_FORMATS.filter(f => supported.includes(f));
+      if(formats.length === 0) { startCameraFallback(); return; }
 
-  // Calculate optimal scan box based on screen width
+      const detector = new BarcodeDetector({formats});
+
+      // Create video element
+      const video = document.createElement("video");
+      video.setAttribute("playsinline","true");
+      video.setAttribute("autoplay","true");
+      video.setAttribute("muted","true");
+      video.style.cssText = "width:100%;border-radius:12px;object-fit:cover;max-height:300px;display:block;";
+      readerEl.appendChild(video);
+
+      // Request HD camera with autofocus
+      const constraints = {
+        video: {
+          facingMode: "environment",
+          width: {ideal:1920, min:1280},
+          height: {ideal:1080, min:720},
+        }
+      };
+
+      videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = videoStream;
+      await video.play();
+
+      // Set up torch & focus
+      currentTrack = videoStream.getVideoTracks()[0];
+      try {
+        const caps = currentTrack.getCapabilities ? currentTrack.getCapabilities() : {};
+        if(caps.torch) document.getElementById("torchBtn").style.display="flex";
+        if(caps.focusMode && caps.focusMode.includes("continuous")){
+          await currentTrack.applyConstraints({advanced:[{focusMode:"continuous"}]}).catch(()=>{});
+        }
+      }catch(e){}
+
+      // Scan loop — 15 times per second
+      nativeScanInterval = setInterval(async ()=>{
+        if(video.readyState < 2) return;
+        try {
+          const barcodes = await detector.detect(video);
+          for(const bc of barcodes){
+            if(bc.rawValue){
+              onScanSuccess(bc.rawValue);
+              break;
+            }
+          }
+        }catch(e){}
+      }, 66);
+
+      cameraActive = true;
+      document.getElementById("camStartBtn").style.display="none";
+      document.getElementById("camStopBtn").style.display="block";
+      document.getElementById("scanHint").style.display="block";
+      console.log("Native BarcodeDetector active, formats:", formats.join(","));
+
+    } catch(err) {
+      console.error("Native scanner error:", err);
+      startCameraFallback();
+    }
+  } else {
+    startCameraFallback();
+  }
+}
+
+function startCameraFallback(){
+  // === Fallback: html5-qrcode library ===
+  const readerEl = document.getElementById("reader");
+  readerEl.innerHTML = "";
+
   const screenW = Math.min(window.innerWidth - 40, 600);
   const qrW = Math.round(screenW * 0.85);
-  const qrH = Math.round(qrW * 0.35);  // Wide rectangle for barcodes
+  const qrH = Math.round(qrW * 0.35);
 
-  // Barcode-only formats for faster detection
   const formatsToSupport = [
     Html5QrcodeSupportedFormats.EAN_13,
     Html5QrcodeSupportedFormats.EAN_8,
@@ -554,70 +628,32 @@ function startCamera(){
 
   scanner = new Html5Qrcode("reader", {formatsToSupport, verbose:false});
 
-  // Request high-resolution camera with autofocus
-  const cameraConfig = {
-    facingMode: "environment",
-    advanced: [{focusMode: "continuous"}, {zoom: 1.0}]
-  };
-
-  // Try getting high-res camera directly for better barcode reading
-  const scanConfig = {
-    fps: 30,
-    qrbox: {width: qrW, height: qrH},
-    aspectRatio: 1.777,
-    disableFlip: true,
-    experimentalFeatures: {useBarCodeDetectorIfSupported: true},
-    videoConstraints: {
-      facingMode: "environment",
-      width: {ideal: 1920, min: 1280},
-      height: {ideal: 1080, min: 720},
-      focusMode: {ideal: "continuous"},
-    }
-  };
-
   scanner.start(
-    cameraConfig,
-    scanConfig,
-    onScanSuccess,
-    ()=>{}
+    {facingMode:"environment"},
+    {fps:25, qrbox:{width:qrW,height:qrH}, disableFlip:true,
+     experimentalFeatures:{useBarCodeDetectorIfSupported:false}},
+    onScanSuccess, ()=>{}
   ).then(()=>{
     cameraActive = true;
     document.getElementById("camStartBtn").style.display="none";
     document.getElementById("camStopBtn").style.display="block";
     document.getElementById("scanHint").style.display="block";
 
-    // Check torch support
     try {
       const videoEl = document.querySelector("#reader video");
       if(videoEl && videoEl.srcObject){
         currentTrack = videoEl.srcObject.getVideoTracks()[0];
         const caps = currentTrack.getCapabilities ? currentTrack.getCapabilities() : {};
-        if(caps.torch){
-          document.getElementById("torchBtn").style.display="flex";
-        }
-        // Try to set continuous focus
+        if(caps.torch) document.getElementById("torchBtn").style.display="flex";
         if(caps.focusMode && caps.focusMode.includes("continuous")){
           currentTrack.applyConstraints({advanced:[{focusMode:"continuous"}]}).catch(()=>{});
         }
       }
     }catch(e){}
+    console.log("Fallback html5-qrcode scanner active");
   }).catch(err=>{
-    console.error("Camera error:",err);
-    // Fallback: try simpler config
-    scanner.start(
-      {facingMode:"environment"},
-      {fps:20, qrbox:{width:qrW,height:qrH}, disableFlip:true,
-       experimentalFeatures:{useBarCodeDetectorIfSupported:true}},
-      onScanSuccess, ()=>{}
-    ).then(()=>{
-      cameraActive = true;
-      document.getElementById("camStartBtn").style.display="none";
-      document.getElementById("camStopBtn").style.display="block";
-      document.getElementById("scanHint").style.display="block";
-    }).catch(err2=>{
-      console.error("Camera fallback error:",err2);
-      showToast("❌ לא ניתן לפתוח מצלמה");
-    });
+    console.error("Camera fallback error:",err);
+    showToast("❌ לא ניתן לפתוח מצלמה");
   });
 }
 
@@ -630,19 +666,29 @@ function toggleTorch(){
 }
 
 function stopCamera(){
-  if(scanner && cameraActive){
-    torchOn = false;
-    currentTrack = null;
-    scanner.stop().then(()=>{
-      cameraActive = false;
-      document.getElementById("camStartBtn").style.display="block";
-      document.getElementById("camStopBtn").style.display="none";
-      document.getElementById("torchBtn").style.display="none";
-      document.getElementById("scanHint").style.display="none";
-      document.getElementById("reader").innerHTML="";
-    }).catch(()=>{});
+  // Stop native scanner
+  if(nativeScanInterval){
+    clearInterval(nativeScanInterval);
+    nativeScanInterval = null;
   }
+  if(videoStream){
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+  }
+  // Stop html5-qrcode scanner
+  if(scanner && cameraActive){
+    scanner.stop().catch(()=>{});
+  }
+  torchOn = false;
+  currentTrack = null;
+  cameraActive = false;
+  document.getElementById("camStartBtn").style.display="block";
+  document.getElementById("camStopBtn").style.display="none";
+  document.getElementById("torchBtn").style.display="none";
+  document.getElementById("scanHint").style.display="none";
+  document.getElementById("reader").innerHTML="";
 }
+
 
 let lastScanTime = 0;
 function onScanSuccess(code){
