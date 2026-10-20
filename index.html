@@ -567,21 +567,51 @@ async function startCamera(){
       video.srcObject = videoStream;
       await video.play();
 
-      // Set up torch & focus
+      // Set up torch, focus & zoom
       currentTrack = videoStream.getVideoTracks()[0];
       try {
         const caps = currentTrack.getCapabilities ? currentTrack.getCapabilities() : {};
         if(caps.torch) document.getElementById("torchBtn").style.display="flex";
+        const advConstraints = [];
         if(caps.focusMode && caps.focusMode.includes("continuous")){
-          await currentTrack.applyConstraints({advanced:[{focusMode:"continuous"}]}).catch(()=>{});
+          advConstraints.push({focusMode:"continuous"});
+        }
+        // Apply 1.5x zoom for closer barcode reading
+        if(caps.zoom && caps.zoom.max > 1){
+          const targetZoom = Math.min(1.5, caps.zoom.max);
+          advConstraints.push({zoom: targetZoom});
+        }
+        if(advConstraints.length > 0){
+          await currentTrack.applyConstraints({advanced: advConstraints}).catch(()=>{});
         }
       }catch(e){}
 
-      // Scan loop — 15 times per second
+      // Create canvas for center-crop detection (improves accuracy)
+      const cropCanvas = document.createElement("canvas");
+      const cropCtx = cropCanvas.getContext("2d");
+
+      // Scan loop — 20 times per second, with center-crop
+      let scanning = false;
       nativeScanInterval = setInterval(async ()=>{
-        if(video.readyState < 2) return;
+        if(video.readyState < 2 || scanning) return;
+        scanning = true;
         try {
-          const barcodes = await detector.detect(video);
+          // First try full frame
+          let barcodes = await detector.detect(video);
+
+          // If no result, try center-cropped frame (better for small barcodes)
+          if(barcodes.length === 0){
+            const vw = video.videoWidth, vh = video.videoHeight;
+            if(vw > 0 && vh > 0){
+              const cw = Math.round(vw * 0.7);
+              const ch = Math.round(vh * 0.5);
+              cropCanvas.width = cw;
+              cropCanvas.height = ch;
+              cropCtx.drawImage(video, (vw-cw)/2, (vh-ch)/2, cw, ch, 0, 0, cw, ch);
+              barcodes = await detector.detect(cropCanvas);
+            }
+          }
+
           for(const bc of barcodes){
             if(bc.rawValue){
               onScanSuccess(bc.rawValue);
@@ -589,7 +619,8 @@ async function startCamera(){
             }
           }
         }catch(e){}
-      }, 66);
+        scanning = false;
+      }, 50);
 
       cameraActive = true;
       document.getElementById("camStartBtn").style.display="none";
