@@ -419,7 +419,6 @@ body{
 <div id="countedTab"><div class="counted-list" id="countedList">
   <div class="empty-state"><div class="icon">📦</div><p>עדיין לא נספרו מוצרים<br>סרקו ברקוד כדי להתחיל</p></div>
 </div>
-<button class="clear-all-btn" id="clearAllBtn" style="display:none;" onclick="showClearAllConfirm()">🗑️ מחק הכל והתחל ספירה חדשה</button>
 </div>
 
 <div id="summaryTab" hidden><div class="counted-list" id="summaryList">
@@ -452,6 +451,8 @@ body{
       <button class="modal-save" onclick="saveSettings()">שמור</button>
       <button class="modal-cancel" onclick="closeSettings()">סגור</button>
     </div>
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0 12px;">
+    <button class="clear-all-btn" onclick="closeSettings();showClearAllConfirm();">🗑️ מחק הכל והתחל ספירה חדשה</button>
   </div>
 </div>
 
@@ -1026,7 +1027,6 @@ function renderCounted(){
       </div>
     </div>`;
   }).join("");
-  document.getElementById("clearAllBtn").style.display=countEntries.length>0?"block":"none";
 }
 
 function renderSummary(){
