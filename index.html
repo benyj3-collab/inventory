@@ -237,6 +237,52 @@ body{
   min-width:40px;text-align:center;flex-shrink:0;
 }
 .item-locked-label{font-size:0.65rem;color:var(--success);font-weight:600;text-align:center;}
+.item-actions{display:flex;gap:4px;margin-top:4px;}
+.item-action-btn{
+  background:none;border:1px solid var(--border);border-radius:6px;
+  font-size:0.68rem;padding:3px 8px;cursor:pointer;font-family:inherit;color:var(--fg-dim);
+}
+.item-action-btn:hover{background:var(--surface);}
+.item-action-btn.del{color:var(--danger);border-color:var(--danger);}
+.clear-all-btn{
+  background:var(--danger);color:#fff;border:none;border-radius:8px;
+  padding:8px 14px;font-family:inherit;font-size:0.82rem;font-weight:600;cursor:pointer;
+  width:100%;margin-top:10px;
+}
+.clear-all-btn:active{opacity:0.8;}
+.confirm-modal-bg{
+  position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);
+  z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;
+}
+.confirm-modal{
+  background:var(--bg);border-radius:14px;padding:20px;max-width:320px;width:100%;
+  text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.3);
+}
+.confirm-modal h3{margin:0 0 10px;font-size:1.05rem;}
+.confirm-modal p{margin:0 0 14px;font-size:0.85rem;color:var(--fg-dim);}
+.confirm-modal input{
+  width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;
+  font-size:1rem;text-align:center;margin-bottom:12px;font-family:inherit;
+  background:var(--surface);color:var(--fg);
+}
+.confirm-modal .btn-row{display:flex;gap:8px;}
+.confirm-modal .btn-row button{flex:1;padding:10px;border-radius:8px;font-family:inherit;font-size:0.88rem;font-weight:600;cursor:pointer;border:none;}
+.confirm-modal .btn-confirm{background:var(--danger);color:#fff;}
+.confirm-modal .btn-cancel{background:var(--surface);color:var(--fg);border:1px solid var(--border);}
+.edit-qty-row{display:flex;align-items:center;gap:6px;margin-top:6px;}
+.edit-qty-input{
+  width:60px;padding:6px;border:1px solid var(--accent);border-radius:6px;
+  font-size:0.9rem;text-align:center;font-family:inherit;
+  background:var(--surface);color:var(--fg);
+}
+.edit-save-btn{
+  background:var(--success);color:#fff;border:none;border-radius:6px;
+  padding:6px 12px;font-size:0.78rem;font-weight:600;cursor:pointer;font-family:inherit;
+}
+.edit-cancel-btn{
+  background:var(--surface);color:var(--fg-dim);border:1px solid var(--border);border-radius:6px;
+  padding:6px 10px;font-size:0.78rem;cursor:pointer;font-family:inherit;
+}
 
 /* Summary */
 .summary-item{
@@ -372,7 +418,9 @@ body{
 
 <div id="countedTab"><div class="counted-list" id="countedList">
   <div class="empty-state"><div class="icon">📦</div><p>עדיין לא נספרו מוצרים<br>סרקו ברקוד כדי להתחיל</p></div>
-</div></div>
+</div>
+<button class="clear-all-btn" id="clearAllBtn" style="display:none;" onclick="showClearAllConfirm()">🗑️ מחק הכל והתחל ספירה חדשה</button>
+</div>
 
 <div id="summaryTab" hidden><div class="counted-list" id="summaryList">
   <div class="empty-state"><div class="icon">📊</div><p>הסיכום יופיע כאן</p></div>
@@ -961,12 +1009,16 @@ function renderCounted(){
     const breakdown=entries.map(e=>e.qty).join("+");
     const showBreakdown=entries.length>1;
     return`
-    <div class="counted-item">
+    <div class="counted-item" id="ci_${barcode}">
       <span class="lock-icon">🔒</span>
       <div class="item-info">
         <div class="item-name">${esc(last.name)}</div>
         <div class="item-barcode">${esc(last.barcode)}</div>
         ${showBreakdown?`<div class="item-counts-detail">${breakdown} = ${total}</div>`:""}
+        <div class="item-actions">
+          <button class="item-action-btn" onclick="editItemQty('${barcode}',${total})">✏️ שנה כמות</button>
+          <button class="item-action-btn del" onclick="deleteItem('${barcode}')">🗑️ מחק</button>
+        </div>
       </div>
       <div>
         <div class="item-qty-badge">${total}</div>
@@ -974,6 +1026,7 @@ function renderCounted(){
       </div>
     </div>`;
   }).join("");
+  document.getElementById("clearAllBtn").style.display=countEntries.length>0?"block":"none";
 }
 
 function renderSummary(){
@@ -1094,6 +1147,137 @@ function saveSettings(){
   try{localStorage.setItem("inv_settings",JSON.stringify(settings));}catch(e){}
   closeSettings();
   showToast("✓ הגדרות נשמרו");
+}
+
+// ===== EDIT / DELETE / CLEAR =====
+
+function editItemQty(barcode, currentTotal){
+  const el = document.getElementById("ci_"+barcode);
+  if(!el) return;
+  const actionsDiv = el.querySelector(".item-actions");
+  if(!actionsDiv) return;
+  // Replace actions with edit input
+  actionsDiv.innerHTML=`
+    <div class="edit-qty-row">
+      <input type="number" class="edit-qty-input" id="editQty_${barcode}" value="${currentTotal}" min="1" inputmode="numeric">
+      <button class="edit-save-btn" onclick="saveEditQty('${barcode}')">שמור</button>
+      <button class="edit-cancel-btn" onclick="renderCounted()">ביטול</button>
+    </div>
+  `;
+  document.getElementById("editQty_"+barcode).focus();
+  document.getElementById("editQty_"+barcode).select();
+}
+
+function saveEditQty(barcode){
+  const newQty = parseInt(document.getElementById("editQty_"+barcode).value)||0;
+  if(newQty <= 0){showToast("כמות חייבת להיות לפחות 1");return;}
+
+  // Remove all entries for this barcode and replace with one entry
+  const oldEntries = countEntries.filter(e=>e.barcode===barcode);
+  if(oldEntries.length===0) return;
+  const template = oldEntries[oldEntries.length-1]; // keep last entry's data
+
+  // Count how many of the old entries were pending sync
+  const oldTotal = oldEntries.reduce((s,e)=>s+e.qty,0);
+  const wasPending = oldEntries.filter(e=>countEntries.indexOf(e) >= countEntries.length - pendingSync).length;
+
+  // Remove old entries
+  countEntries = countEntries.filter(e=>e.barcode!==barcode);
+  pendingSync = Math.max(0, pendingSync - wasPending);
+
+  // Add new single entry
+  const entry = {
+    id: Date.now()+"_"+Math.random().toString(36).slice(2,6),
+    barcode: template.barcode,
+    name: template.name,
+    cost: template.cost,
+    costEdited: template.costEdited,
+    price: template.price,
+    supplier: template.supplier,
+    qty: newQty,
+    ts: new Date().toISOString(),
+    device: settings.deviceName
+  };
+  countEntries.push(entry);
+  pendingSync++;
+  document.getElementById("pendingBadge").textContent = pendingSync;
+  saveCounts();
+  renderCounted();
+  renderSummary();
+  showToast(`✏️ ${template.name} — ${newQty} יח'`);
+}
+
+function deleteItem(barcode){
+  const entries = countEntries.filter(e=>e.barcode===barcode);
+  if(entries.length===0) return;
+  const name = entries[entries.length-1].name;
+
+  // Show inline confirmation
+  const el = document.getElementById("ci_"+barcode);
+  if(!el) return;
+  const actionsDiv = el.querySelector(".item-actions");
+  if(!actionsDiv) return;
+  actionsDiv.innerHTML=`
+    <div class="edit-qty-row">
+      <span style="font-size:0.78rem;color:var(--danger);font-weight:600;">למחוק?</span>
+      <button class="edit-save-btn" style="background:var(--danger);" onclick="confirmDeleteItem('${barcode}')">כן, מחק</button>
+      <button class="edit-cancel-btn" onclick="renderCounted()">ביטול</button>
+    </div>
+  `;
+}
+
+function confirmDeleteItem(barcode){
+  const wasPending = countEntries.filter(e=>e.barcode===barcode).filter(e=>countEntries.indexOf(e) >= countEntries.length - pendingSync).length;
+  const name = (countEntries.find(e=>e.barcode===barcode)||{}).name||"";
+  countEntries = countEntries.filter(e=>e.barcode!==barcode);
+  pendingSync = Math.max(0, pendingSync - wasPending);
+  document.getElementById("pendingBadge").textContent = pendingSync;
+  saveCounts();
+  renderCounted();
+  renderSummary();
+  showToast(`🗑️ ${name} נמחק`);
+}
+
+function showClearAllConfirm(){
+  const modal = document.createElement("div");
+  modal.className="confirm-modal-bg";
+  modal.id="clearAllModal";
+  modal.innerHTML=`
+    <div class="confirm-modal">
+      <h3>🗑️ מחיקת ספירה</h3>
+      <p>פעולה זו תמחק את כל הנתונים ותתחיל ספירה חדשה.<br>הקלד את הסיסמא לאישור:</p>
+      <input type="password" id="clearPassInput" placeholder="סיסמא" inputmode="numeric">
+      <div class="btn-row">
+        <button class="btn-confirm" onclick="confirmClearAll()">מחק הכל</button>
+        <button class="btn-cancel" onclick="closeClearAll()">ביטול</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(()=>document.getElementById("clearPassInput").focus(),100);
+}
+
+function closeClearAll(){
+  const m = document.getElementById("clearAllModal");
+  if(m) m.remove();
+}
+
+function confirmClearAll(){
+  const pass = document.getElementById("clearPassInput").value;
+  if(pass !== "899838"){
+    showToast("❌ סיסמא שגויה");
+    document.getElementById("clearPassInput").value="";
+    document.getElementById("clearPassInput").focus();
+    return;
+  }
+  countEntries = [];
+  pendingSync = 0;
+  document.getElementById("pendingBadge").textContent = "0";
+  saveCounts();
+  renderCounted();
+  renderSummary();
+  closeClearAll();
+  showToast("✓ הספירה נמחקה — מוכן לספירה חדשה");
 }
 
 // ===== UTILS =====
