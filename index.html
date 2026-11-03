@@ -853,19 +853,11 @@ function onScanSuccess(code){
   beep();
   try{navigator.vibrate(100);}catch(e){}
 
-  // Lookup
+  // Camera scan — EXACT match only (no suffix guessing)
   const product = productMap[code];
   if(product){
     showProductCard(product);
   } else {
-    // Try suffix
-    for(let len = code.length; len >= 4; len--){
-      if(suffixMaps[len]){
-        const matches = suffixMaps[len][code.slice(-len)];
-        if(matches && matches.length === 1){showProductCard(matches[0]);return;}
-        if(matches && matches.length > 1){showMultipleMatches(matches);return;}
-      }
-    }
     showNotFound(code);
   }
 }
