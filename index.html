@@ -580,6 +580,8 @@ let nativeScanInterval = null;
 let videoStream = null;
 const NATIVE_FORMATS = ['ean_13','ean_8','code_128','code_39','upc_a','upc_e','itf','code_93'];
 const hasNativeDetector = ('BarcodeDetector' in window);
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let iosAutoFallbackTimer = null;
 
 async function startCamera(){
   if(cameraActive) return;
@@ -587,7 +589,7 @@ async function startCamera(){
   readerEl.innerHTML = "";
 
   if(hasNativeDetector){
-    // === NATIVE BarcodeDetector — much faster & more reliable ===
+    // === NATIVE BarcodeDetector ===
     try {
       const supported = await BarcodeDetector.getSupportedFormats();
       const formats = NATIVE_FORMATS.filter(f => supported.includes(f));
@@ -603,8 +605,14 @@ async function startCamera(){
       video.style.cssText = "width:100%;border-radius:12px;object-fit:cover;max-height:300px;display:block;";
       readerEl.appendChild(video);
 
-      // Request HD camera with autofocus
-      const constraints = {
+      // Camera constraints — iOS needs softer constraints (no min values)
+      const constraints = isIOS ? {
+        video: {
+          facingMode: "environment",
+          width: {ideal:1280},
+          height: {ideal:720},
+        }
+      } : {
         video: {
           facingMode: "environment",
           width: {ideal:1920, min:1280},
@@ -616,16 +624,15 @@ async function startCamera(){
       video.srcObject = videoStream;
       await video.play();
 
-      // Set up torch, focus & zoom
+      // Set up torch, focus & zoom — getCapabilities may not exist on iOS
       currentTrack = videoStream.getVideoTracks()[0];
       try {
-        const caps = currentTrack.getCapabilities ? currentTrack.getCapabilities() : {};
+        const caps = (currentTrack.getCapabilities && !isIOS) ? currentTrack.getCapabilities() : {};
         if(caps.torch) document.getElementById("torchBtn").style.display="flex";
         const advConstraints = [];
         if(caps.focusMode && caps.focusMode.includes("continuous")){
           advConstraints.push({focusMode:"continuous"});
         }
-        // Apply 1.5x zoom for closer barcode reading
         if(caps.zoom && caps.zoom.max > 1){
           const targetZoom = Math.min(1.5, caps.zoom.max);
           advConstraints.push({zoom: targetZoom});
@@ -635,23 +642,58 @@ async function startCamera(){
         }
       }catch(e){}
 
-      // Create canvas for center-crop detection (improves accuracy)
+      // Canvas for detection — on iOS, ALL detection goes through canvas
+      // (iOS Safari BarcodeDetector doesn't work well directly on video elements)
+      const fullCanvas = document.createElement("canvas");
+      const fullCtx = fullCanvas.getContext("2d",{willReadFrequently:true});
       const cropCanvas = document.createElement("canvas");
-      const cropCtx = cropCanvas.getContext("2d");
+      const cropCtx = cropCanvas.getContext("2d",{willReadFrequently:true});
 
-      // Scan loop — 20 times per second, with center-crop
+      // iOS auto-fallback: if no barcode found in 8 seconds, switch to html5-qrcode
+      let nativeFoundBarcode = false;
+      if(isIOS){
+        iosAutoFallbackTimer = setTimeout(()=>{
+          if(!nativeFoundBarcode && cameraActive){
+            console.log("iOS: native detector timeout, switching to html5-qrcode fallback");
+            stopCamera();
+            startCameraFallback();
+          }
+        }, 8000);
+      }
+
+      // Scan loop
       let scanning = false;
+      const scanRate = isIOS ? 100 : 50; // iOS: 10fps, Android: 20fps
       nativeScanInterval = setInterval(async ()=>{
         if(video.readyState < 2 || scanning) return;
         scanning = true;
         try {
-          // First try full frame
-          let barcodes = await detector.detect(video);
+          const vw = video.videoWidth, vh = video.videoHeight;
+          if(vw === 0 || vh === 0){ scanning = false; return; }
 
-          // If no result, try center-cropped frame (better for small barcodes)
-          if(barcodes.length === 0){
-            const vw = video.videoWidth, vh = video.videoHeight;
-            if(vw > 0 && vh > 0){
+          let barcodes = [];
+
+          if(isIOS){
+            // iOS: always detect via canvas (more reliable than direct video detection)
+            fullCanvas.width = vw;
+            fullCanvas.height = vh;
+            fullCtx.drawImage(video, 0, 0, vw, vh);
+            barcodes = await detector.detect(fullCanvas);
+
+            // Try center crop if full frame found nothing
+            if(barcodes.length === 0){
+              const cw = Math.round(vw * 0.7);
+              const ch = Math.round(vh * 0.5);
+              cropCanvas.width = cw;
+              cropCanvas.height = ch;
+              cropCtx.drawImage(video, (vw-cw)/2, (vh-ch)/2, cw, ch, 0, 0, cw, ch);
+              barcodes = await detector.detect(cropCanvas);
+            }
+          } else {
+            // Android: detect directly from video (fast & reliable)
+            barcodes = await detector.detect(video);
+
+            if(barcodes.length === 0){
               const cw = Math.round(vw * 0.7);
               const ch = Math.round(vh * 0.5);
               cropCanvas.width = cw;
@@ -663,19 +705,21 @@ async function startCamera(){
 
           for(const bc of barcodes){
             if(bc.rawValue){
+              nativeFoundBarcode = true;
+              if(iosAutoFallbackTimer){ clearTimeout(iosAutoFallbackTimer); iosAutoFallbackTimer = null; }
               onScanSuccess(bc.rawValue);
               break;
             }
           }
         }catch(e){}
         scanning = false;
-      }, 50);
+      }, scanRate);
 
       cameraActive = true;
       document.getElementById("camStartBtn").style.display="none";
       document.getElementById("camStopBtn").style.display="block";
       document.getElementById("scanHint").style.display="block";
-      console.log("Native BarcodeDetector active, formats:", formats.join(","));
+      console.log((isIOS?"iOS":"Android")+" native BarcodeDetector active, formats:", formats.join(","));
 
     } catch(err) {
       console.error("Native scanner error:", err);
@@ -693,7 +737,7 @@ function startCameraFallback(){
 
   const screenW = Math.min(window.innerWidth - 40, 600);
   const qrW = Math.round(screenW * 0.85);
-  const qrH = Math.round(qrW * 0.35);
+  const qrH = Math.round(qrW * (isIOS ? 0.5 : 0.35)); // taller scan area on iOS
 
   const formatsToSupport = [
     Html5QrcodeSupportedFormats.EAN_13,
@@ -708,10 +752,17 @@ function startCameraFallback(){
 
   scanner = new Html5Qrcode("reader", {formatsToSupport, verbose:false});
 
+  // iOS gets higher resolution and slower fps for better decode accuracy
+  const fallbackFps = isIOS ? 15 : 25;
+  const aspectRatio = isIOS ? 1.777 : undefined; // force 16:9 on iOS
+
+  const scanConfig = {fps:fallbackFps, qrbox:{width:qrW,height:qrH}, disableFlip:true,
+     experimentalFeatures:{useBarCodeDetectorIfSupported:false}};
+  if(aspectRatio) scanConfig.aspectRatio = aspectRatio;
+
   scanner.start(
     {facingMode:"environment"},
-    {fps:25, qrbox:{width:qrW,height:qrH}, disableFlip:true,
-     experimentalFeatures:{useBarCodeDetectorIfSupported:false}},
+    scanConfig,
     onScanSuccess, ()=>{}
   ).then(()=>{
     cameraActive = true;
@@ -746,6 +797,8 @@ function toggleTorch(){
 }
 
 function stopCamera(){
+  // Stop iOS auto-fallback timer
+  if(iosAutoFallbackTimer){ clearTimeout(iosAutoFallbackTimer); iosAutoFallbackTimer = null; }
   // Stop native scanner
   if(nativeScanInterval){
     clearInterval(nativeScanInterval);
