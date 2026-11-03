@@ -430,6 +430,8 @@ body{
   <div class="search-results" id="searchResults"></div>
 </div></div>
 
+<div id="appVersionFooter" style="text-align:center;padding:8px 0 4px;font-size:0.65rem;color:var(--fg-dim);opacity:0.4;"></div>
+
 <!-- BOTTOM BAR -->
 <div class="bottom-bar" id="bottomBar">
   <button class="bottom-small-btn" id="exportBtn">📥 ייצוא</button>
@@ -453,6 +455,7 @@ body{
     </div>
     <hr style="border:none;border-top:1px solid var(--border);margin:16px 0 12px;">
     <button class="clear-all-btn" onclick="closeSettings();showClearAllConfirm();">🗑️ מחק הכל והתחל ספירה חדשה</button>
+    <div style="text-align:center;margin-top:14px;font-size:0.72rem;color:var(--fg-dim);opacity:0.6;">גרסה 1.0</div>
   </div>
 </div>
 
@@ -1334,6 +1337,8 @@ function showToast(msg){
   setTimeout(()=>toast.remove(),2000);
 }
 function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+const APP_VERSION = "1.0";
+document.getElementById("appVersionFooter").textContent = "v" + APP_VERSION;
 </script>
 </body>
 </html>
